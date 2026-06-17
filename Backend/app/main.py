@@ -63,7 +63,6 @@ from app.websocket.manager import (
     init_pubsub_bridge,
 )
 
-from app.services.telemetry_service import telemetry_loop
 
 # ── Logging setup ──────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -102,7 +101,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # ── 1. Initialise Redis connection pool ────────────────────────────────────
     try:
         await init_redis_pool()
-        asyncio.create_task(telemetry_loop())
+        
         logger.info("Redis pool ready.")
     except Exception as exc:
         logger.critical("Redis initialisation failed — cannot start: %s", exc)

@@ -42,29 +42,12 @@ from dataclasses import dataclass, field, asdict
 from enum import Enum
 from typing import Any
 
-import openai
-
 # ── Structured logger ──────────────────────────────────────────────────────────
 logger = logging.getLogger(__name__)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
 )
-
-# ── OpenAI client (key from env) ───────────────────────────────────────────────
-_openai_client: openai.OpenAI | None = None
-
-
-def _get_openai_client() -> openai.OpenAI:
-    global _openai_client
-    if _openai_client is None:
-        api_key = os.getenv("OPENAI_API_KEY")
-        if not api_key:
-            raise EnvironmentError(
-                "OPENAI_API_KEY is not set. Add it to your .env file."
-            )
-        _openai_client = openai.OpenAI(api_key=api_key)
-    return _openai_client
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -338,16 +321,26 @@ Output format (strict):
 
 class LLMReportParser:
     """
-    Uses an LLM (GPT-4o-mini by default) to extract structured anomalies
+    Uses an LLM (Groq's llama model by default) to extract structured anomalies
     from free-text clinical reports.
 
     The LLM output is strictly validated before downstream use.
     """
 
-    DEFAULT_MODEL = "gpt-4o-mini"
+    DEFAULT_MODEL = "llama-3.3-70b-versatile"
 
-    def __init__(self, model: str | None = None) -> None:
-        self.model = model or os.getenv("LLM_MODEL", self.DEFAULT_MODEL)
+    def __init__(self, groq_api_key: str, model: str | None = None) -> None:
+        from langchain_groq import ChatGroq
+        from langchain_core.output_parsers import StrOutputParser
+    
+        self.model = model or self.DEFAULT_MODEL
+        self._llm = ChatGroq(
+            model=self.model,
+            temperature=0.0,  # deterministic extraction
+            max_tokens=1500,
+            groq_api_key=groq_api_key,
+        )
+        self._output_parser = StrOutputParser()
 
     def extract(self, report_text: str) -> tuple[list[dict[str, Any]], str]:
         """
@@ -368,28 +361,25 @@ class LLMReportParser:
         ValueError
             If the LLM returns unparseable output.
         """
-        client = _get_openai_client()
         logger.info("Sending report to LLM (%s) for extraction…", self.model)
 
         try:
-            response = client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": LLM_EXTRACTION_SYSTEM_PROMPT},
-                    {
-                        "role": "user",
-                        "content": f"Extract all biomarker values from this report:\n\n{report_text}",
-                    },
-                ],
-                temperature=0.0,   # deterministic extraction
-                max_tokens=1500,
-                response_format={"type": "json_object"} if "gpt-4" in self.model else None,
-            )
-        except openai.OpenAIError as exc:
+            from langchain_core.messages import HumanMessage, SystemMessage
+            
+            messages = [
+                SystemMessage(content=LLM_EXTRACTION_SYSTEM_PROMPT),
+                HumanMessage(
+                    content=f"Extract all biomarker values from this report:\n\n{report_text}"
+                ),
+            ]
+            
+            response = self._llm.invoke(messages)
+            raw_content = response.content if hasattr(response, 'content') else str(response)
+            
+        except Exception as exc:
             logger.error("LLM API call failed: %s", exc)
             raise
 
-        raw_content = response.choices[0].message.content or "[]"
         logger.debug("LLM raw response: %s", raw_content[:300])
 
         # Attempt to extract JSON array from response (handles markdown fences)
@@ -617,14 +607,19 @@ class ClinicalScreeningPipeline:
 
     Parameters
     ----------
+    groq_api_key : str | None
+        Groq API key for LLM calls. If None, uses mock mode.
     use_mock_llm : bool
         If True, skips the real LLM call and uses built-in mock data.
-        Useful for local testing without an OpenAI API key.
+        Useful for local testing without a Groq API key.
     """
 
-    def __init__(self, use_mock_llm: bool = False) -> None:
-        self.use_mock_llm = use_mock_llm
-        self.parser = LLMReportParser()
+    def __init__(self, groq_api_key: str | None = None, use_mock_llm: bool = False) -> None:
+        self.use_mock_llm = use_mock_llm or groq_api_key is None
+        if not self.use_mock_llm and groq_api_key:
+            self.parser = LLMReportParser(groq_api_key=groq_api_key)
+        else:
+            self.parser = None
         self.rule_engine = AnomalyRuleEngine()
 
     def screen(

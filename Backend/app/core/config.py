@@ -122,12 +122,13 @@ class Settings(BaseSettings):
     redis_socket_timeout: int = Field(default=5)
 
     # ── LLM / OpenAI ──────────────────────────────────────────────────────────
-    openai_api_key: SecretStr = Field(
-        default=SecretStr("sk-placeholder"),
-        description="OpenAI API key — set in .env or environment.",
+    groq_api_key: SecretStr | None = Field(
+    default=None,
+    description="Groq API key loaded from environment.",
     )
+
     llm_model: str = Field(
-        default="gpt-4o-mini",
+        default="llama-3.3-70b-versatile",
         description="Default LLM model for copilot and clinical screening.",
     )
     llm_temperature: float = Field(default=0.2, ge=0.0, le=2.0)

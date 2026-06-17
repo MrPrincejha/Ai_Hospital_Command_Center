@@ -223,10 +223,10 @@ class MockTelemetryGenerator:
 
         # ── Fill target columns via shift ───────────────────────────────────
         horizon = FORECAST_HORIZON_STEPS
-        df["icu_occupancy_pct_t12"] = df["icu_occupancy_pct"].shift(-horizon).fillna(method="ffill")
-        df["er_congestion_t12"] = df["er_congestion_prob"].shift(-horizon).fillna(method="ffill")
+        df["icu_occupancy_pct_t12"] = df["icu_occupancy_pct"].shift(-horizon).ffill()
+        df["er_congestion_t12"] = df["er_congestion_prob"].shift(-horizon).ffill()
         df["patient_inflow_t12"] = (
-            df["total_patients_in_hospital"].shift(-horizon).fillna(method="ffill").astype(int)
+            df["total_patients_in_hospital"].shift(-horizon).ffill().astype(int)
         )
 
         # Drop the last `horizon` rows (incomplete targets)

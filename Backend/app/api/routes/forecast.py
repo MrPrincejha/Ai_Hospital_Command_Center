@@ -1,18 +1,3 @@
-# backend/app/api/routes/forecast.py
-"""
-AI Hospital Command Center — Forecast API Routes
-=================================================
-REST endpoints for the ML forecasting engine.
-
-Endpoints
----------
-POST  /api/forecast/run          — Trigger a training + forecast Celery task
-GET   /api/forecast/latest       — Retrieve latest forecast from Redis
-GET   /api/forecast/status/{id}  — Poll Celery task status
-
-Author : AI Hospital Command Center Team
-"""
-
 from __future__ import annotations
 
 import logging
@@ -30,38 +15,24 @@ from app.schemas.hospital import (
     ForecastResultSchema,
     SimulationStatusResponse,
 )
-from worker.celery_app import celery_app, run_forecast_task
+
+from worker.celery_app import celery_app, get_forecast_task
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/forecast", tags=["Forecast"])
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# POST /api/forecast/run
-# ─────────────────────────────────────────────────────────────────────────────
 
 @router.post(
     "/run",
     response_model=ForecastTaskResponse,
     status_code=status.HTTP_202_ACCEPTED,
     summary="Trigger ML forecasting pipeline",
-    description=(
-        "Queues the full train → forecast pipeline on the Celery forecast "
-        "worker. XGBoost + RandomForest models are trained on synthetic "
-        "telemetry and a 12-hour forecast is stored in Redis."
-    ),
 )
 async def trigger_forecast(
     request: ForecastTriggerRequest,
     settings: Settings = Depends(get_settings),
 ) -> ForecastTaskResponse:
-    """
-    Queue a forecasting task. Returns task_id for polling.
 
-    Training on 8760 hours typically takes 30–90 seconds depending on hardware.
-    The result is automatically stored under `hospital:latest_forecast` in Redis
-    and will be consumed by the AI copilot.
-    """
     logger.info(
         "Forecast run requested | training_hours=%d | seed=%d",
         request.training_hours,
@@ -69,13 +40,16 @@ async def trigger_forecast(
     )
 
     try:
-        task = run_forecast_task.apply_async(
+        forecast_task = get_forecast_task()
+
+        task = forecast_task.apply_async(
             kwargs={
                 "training_hours": request.training_hours,
                 "seed": request.seed,
             },
             queue="forecast",
         )
+
     except Exception as exc:
         logger.error("Failed to queue forecast task: %s", exc)
         raise HTTPException(
@@ -95,28 +69,14 @@ async def trigger_forecast(
     )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# GET /api/forecast/latest
-# ─────────────────────────────────────────────────────────────────────────────
-
 @router.get(
     "/latest",
     response_model=ForecastResponse,
-    summary="Get latest ML forecast",
-    description=(
-        "Returns the most recent 12-hour forecast from Redis. "
-        "Includes ICU occupancy, ER congestion, and patient inflow predictions."
-    ),
 )
 async def get_latest_forecast(
     settings: Settings = Depends(get_settings),
 ) -> ForecastResponse:
-    """
-    Retrieve the latest stored forecast result.
 
-    Returns 200 with available=False if no forecast has been run yet.
-    Trigger a forecast with POST /forecast/run first.
-    """
     fetched_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
     try:
@@ -165,19 +125,14 @@ async def get_latest_forecast(
     )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# GET /api/forecast/status/{task_id}
-# ─────────────────────────────────────────────────────────────────────────────
-
 @router.get(
     "/status/{task_id}",
     response_model=SimulationStatusResponse,
-    summary="Poll forecast task status",
-    description="Returns the current Celery task state for a forecast run.",
 )
 async def get_forecast_status(task_id: str) -> SimulationStatusResponse:
-    """Check the state of a queued forecast task."""
+
     try:
+        task_id = task_id.strip('"')
         result: AsyncResult = celery_app.AsyncResult(task_id)
         state = result.state
     except Exception as exc:
@@ -195,6 +150,7 @@ async def get_forecast_status(task_id: str) -> SimulationStatusResponse:
             task_result = result.get(timeout=1)
         except Exception as exc:
             logger.warning("Could not retrieve result for %s: %s", task_id, exc)
+
     elif state == "FAILURE":
         error_msg = str(result.info) if result.info else "Unknown error"
 

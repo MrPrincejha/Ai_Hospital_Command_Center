@@ -19,7 +19,7 @@ import logging
 import time
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, status, Depends
 
 from app.schemas.hospital import (
     ClinicalScreenRequest,
@@ -31,6 +31,7 @@ from app.services.clinical_scorer import (
     BIOMARKER_RULES,
     SAMPLE_REPORT,
 )
+from app.core.config import Settings, get_settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/clinical", tags=["Clinical Screening"])
@@ -55,11 +56,12 @@ router = APIRouter(prefix="/clinical", tags=["Clinical Screening"])
 )
 async def screen_clinical_report(
     request: ClinicalScreenRequest,
+    settings: Settings = Depends(get_settings),
 ) -> ClinicalScreenResponse:
     """
     Screen a clinical/lab report and return a structured urgency assessment.
 
-    Set `use_mock_llm=true` to run without an OpenAI API key (uses built-in
+    Set `use_mock_llm=true` to run without a Groq API key (uses built-in
     mock anomalies — useful for testing and demos).
     """
     logger.info(
@@ -69,7 +71,15 @@ async def screen_clinical_report(
         request.use_mock_llm,
     )
 
-    pipeline = ClinicalScreeningPipeline(use_mock_llm=request.use_mock_llm)
+    # Get Groq API key if available, otherwise falls back to mock mode
+    groq_api_key = None
+    if settings.groq_api_key is not None:
+        groq_api_key = settings.groq_api_key.get_secret_value()
+
+    pipeline = ClinicalScreeningPipeline(
+        groq_api_key=groq_api_key,
+        use_mock_llm=request.use_mock_llm,
+    )
 
     try:
         result = pipeline.screen(
@@ -185,7 +195,8 @@ async def run_demo_screen() -> ClinicalScreenResponse:
     """
     logger.info("Demo clinical screen requested.")
 
-    pipeline = ClinicalScreeningPipeline(use_mock_llm=True)
+    # Demo always uses mock mode, no LLM needed
+    pipeline = ClinicalScreeningPipeline(groq_api_key=None, use_mock_llm=True)
 
     try:
         result = pipeline.screen(

@@ -43,7 +43,8 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import RunnablePassthrough
-from langchain_openai import ChatOpenAI
+
+from langchain_groq import ChatGroq
 
 # ── Structured logger ──────────────────────────────────────────────────────────
 logger = logging.getLogger(__name__)
@@ -329,6 +330,7 @@ class HospitalCopilotService:
     def __init__(
         self,
         redis_client: redis.Redis,
+        groq_api_key: str,
         model: str | None = None,
         temperature: float = 0.2,
         max_history_turns: int = 6,
@@ -341,18 +343,12 @@ class HospitalCopilotService:
         self._fetcher = TelemetryFetcher(redis_client)
         self._prompt_builder = OperationalPromptBuilder()
 
-        # Initialise LangChain LLM
-        api_key = os.getenv("OPENAI_API_KEY")
-        if not api_key:
-            raise EnvironmentError(
-                "OPENAI_API_KEY must be set in environment / .env"
-            )
-
-        self._llm = ChatOpenAI(
+        # Initialise LangChain LLM with Groq
+        self._llm = ChatGroq(
             model=self.model_name,
             temperature=self.temperature,
             max_tokens=self.MAX_RESPONSE_TOKENS,
-            openai_api_key=api_key,
+            groq_api_key=groq_api_key,
         )
 
         self._output_parser = StrOutputParser()

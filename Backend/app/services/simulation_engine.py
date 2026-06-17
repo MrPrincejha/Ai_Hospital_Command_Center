@@ -1,4 +1,4 @@
-# backend/worker/tasks/sim_engine.py
+# backend/app/services/simulation_engine.py
 """
 AI Hospital Command Center — Discrete Event Simulation Engine
 =============================================================
@@ -42,6 +42,8 @@ import numpy as np
 import redis
 import simpy
 
+from app.core.config import settings
+
 # ── Structured logger ──────────────────────────────────────────────────────────
 logger = logging.getLogger(__name__)
 logging.basicConfig(
@@ -49,8 +51,8 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
 )
 
-# ── Redis channel name (matches FastAPI subscriber) ────────────────────────────
-TELEMETRY_CHANNEL = "hospital:telemetry"
+# ── Redis channel name (from config) ──────────────────────────────────────────────
+# Note: Use settings.redis_telemetry_channel at runtime to allow configuration changes
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Domain configuration
@@ -445,7 +447,17 @@ class HospitalSimulation:
             return
         try:
             payload = event.to_json()
-            self.redis.publish(TELEMETRY_CHANNEL, payload)
+
+            # Realtime websocket streaming (use configured channel)
+            self.redis.publish(settings.redis_telemetry_channel, payload)
+
+            # Persist latest telemetry for REST polling
+            self.redis.set(
+                settings.redis_telemetry_key,
+                payload,
+                ex=300,
+            )
+
             logger.debug("Published telemetry event %s", event.event_id)
         except redis.RedisError as exc:
             logger.warning("Redis publish failed: %s", exc)

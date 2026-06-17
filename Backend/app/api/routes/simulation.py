@@ -1,7 +1,10 @@
+#Backend/app/api/routes/simulation.py
+
 from __future__ import annotations
 
 import logging
 import time
+from datetime import datetime
 from typing import Any
 
 from celery.result import AsyncResult
@@ -18,7 +21,7 @@ from app.schemas.hospital import (
     DepartmentSnapshotSchema,
 )
 
-from worker.celery_app import celery_app, run_simulation_task
+from worker.celery_app import celery_app, get_simulation_task
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/simulation", tags=["Simulation"])
@@ -47,7 +50,9 @@ async def start_simulation(
     )
 
     try:
-        task = run_simulation_task.apply_async(
+        simulation_task = get_simulation_task()
+
+        task = simulation_task.apply_async(
             kwargs={
                 "sim_hours": request.sim_hours,
                 "telemetry_interval": request.telemetry_interval,
@@ -55,6 +60,7 @@ async def start_simulation(
             },
             queue="simulation",
         )
+
     except Exception as exc:
         logger.error("Failed to queue simulation task: %s", exc)
         raise HTTPException(
@@ -87,6 +93,7 @@ async def start_simulation(
 async def get_simulation_status(task_id: str):
 
     try:
+        task_id = task_id.strip('"')  # 🔥 IMPORTANT FIX
         result: AsyncResult = celery_app.AsyncResult(task_id)
         state = result.state
     except Exception as exc:
@@ -155,10 +162,19 @@ async def get_latest_telemetry(
             for s in data.get("snapshots", [])
         ]
 
+        # Handle timestamp conversion: if it's a string (ISO format), convert to Unix epoch float
+        timestamp_value = data.get("timestamp", 0.0)
+        if isinstance(timestamp_value, str):
+            try:
+                dt = datetime.fromisoformat(timestamp_value.replace("Z", "+00:00"))
+                timestamp_value = dt.timestamp()
+            except (ValueError, AttributeError):
+                timestamp_value = 0.0
+        
         telemetry_event = TelemetryEventSchema(
             event_id=data.get("event_id", ""),
             event_type=data.get("event_type", "telemetry_tick"),
-            timestamp=data.get("timestamp", 0.0),
+            timestamp=timestamp_value,
             snapshots=snapshots,
             global_alert=data.get("global_alert", "normal"),
             total_queue=data.get("total_queue", 0),

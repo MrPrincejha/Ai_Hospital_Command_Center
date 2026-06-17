@@ -20,7 +20,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.core.config import Settings, get_settings
-from app.core.redis_client import get_redis_async
+from app.core.redis_client import get_redis_sync
 from app.schemas.hospital import (
     CopilotQueryRequest,
     CopilotQueryResponse,
@@ -47,20 +47,22 @@ async def get_copilot_service(
     """
     FastAPI dependency that returns the appropriate copilot instance.
 
-    Uses the real LangChain copilot when OPENAI_API_KEY is set.
+    Uses the real LangChain copilot when GROQ_API_KEY is configured in settings.
     Falls back to MockHospitalCopilot for local development without a key.
     """
-    import os
-    has_api_key = bool(os.getenv("OPENAI_API_KEY", "").strip())
+    # Check if Groq API key is configured in settings
+    has_api_key = settings.groq_api_key is not None
 
-    if not has_api_key or settings.environment == "development":
+    if not has_api_key:
+        logger.warning("GROQ_API_KEY not configured — using mock copilot")
         # Mock mode — no API key required, no Redis required
         return MockHospitalCopilot()
 
     try:
-        redis_client = get_redis_async()
+        redis_client = get_redis_sync()
         return HospitalCopilotService(
             redis_client=redis_client,
+            groq_api_key=settings.groq_api_key.get_secret_value(),
             model=settings.llm_model,
             temperature=settings.llm_temperature,
         )
@@ -213,9 +215,10 @@ async def get_copilot_status(
     import os
     from app.core.redis_client import get_json, health_check
 
-    has_api_key = bool(os.getenv("OPENAI_API_KEY", "").strip())
+    has_api_key = settings.groq_api_key is not None
 
     redis_ok = False
+
     telemetry_available = False
     forecast_available = False
 
@@ -242,6 +245,6 @@ async def get_copilot_status(
         "forecast_available": forecast_available,
         "notes": (
             None if overall_ready else
-            "Set OPENAI_API_KEY and ensure a simulation has been run."
+            "Set GROQ_API_KEY in .env file and ensure a simulation has been run."
         ),
     }
