@@ -167,22 +167,51 @@ This hybrid approach ensures that the system is both powerful in its ability to 
 
 ## Getting Started
 
+### Quick Start (Recommended)
+
+For detailed setup instructions, see [SETUP.md](SETUP.md).
+
+**Docker Compose** (All-in-one):
+```bash
+cd Backend
+cp .env.example .env
+# Edit .env and add your GROQ_API_KEY
+cd ..
+docker-compose up --build
+```
+
+Then access:
+- **Frontend:** http://localhost:3000
+- **API Docs:** http://localhost:8000/docs
+
 ### Prerequisites
 
-- Docker and Docker Compose
-- Node.js and npm (or yarn)
+#### For Docker Compose (Recommended)
+- Docker Desktop (includes Docker and Docker Compose)
+- Git
+
+#### For Local Development
+- Python 3.11+
+- Node.js 18+
+- PostgreSQL 14+
+- Redis 7+
+- MongoDB 6+ (optional)
 
 ### Installation
 
 1.  **Clone the repository:**
     ```bash
     git clone <repository-url>
-    cd <repository-folder>
+    cd ai_hospital
     ```
 
 2.  **Backend Setup:**
     - Navigate to the `Backend` directory.
-    - Create a `.env` file based on the configuration in `app/core/config.py`. You will need to provide credentials for Redis and PostgreSQL.
+    - Copy `.env.example` to `.env`:
+      ```bash
+      cp .env.example .env
+      ```
+    - Edit `.env` and provide your Groq API key and database credentials.
 
 3.  **Frontend Setup:**
     - Navigate to the `frontend` directory.
@@ -193,17 +222,19 @@ This hybrid approach ensures that the system is both powerful in its ability to 
 
 ### Running the Application
 
-The application is designed to be run with Docker Compose, which will start the backend, frontend, Redis, and PostgreSQL containers.
+**Option 1: Docker Compose** (Recommended)
+```bash
+docker-compose up --build
+```
 
-1.  **Start the application:**
-    - From the root of the project, run:
-      ```bash
-      docker-compose up --build
-      ```
+**Option 2: Local Development**
+See [SETUP.md](SETUP.md) for detailed local development instructions.
 
-2.  **Access the application:**
-    - **Frontend:** Open your browser and navigate to `http://localhost:3000`.
-    - **Backend API:** The API will be available at `http://localhost:8000`. You can access the API documentation at `http://localhost:8000/docs`.
+### Access the Application
+
+- **Frontend:** http://localhost:3000
+- **Backend API:** http://localhost:8000
+- **API Documentation:** http://localhost:8000/docs
 
 ## API Endpoints
 
@@ -227,3 +258,13 @@ The backend emits various WebSocket events to update the frontend in real-time. 
 - `forecast_update`: Delivers new forecast data.
 
 The frontend listens for these events and updates the UI accordingly.
+
+
+## Contributing
+
+1. Create a feature branch: `git checkout -b feature/your-feature`
+2. Make your changes and commit: `git commit -am "Add your feature"`
+3. Push to the branch: `git push origin feature/your-feature`
+4. Create a Pull Request
+
+
