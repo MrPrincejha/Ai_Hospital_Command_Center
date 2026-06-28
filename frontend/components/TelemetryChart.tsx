@@ -31,8 +31,22 @@ import { useHospitalStore } from "@/store/hospitalStore";
 import type { TelemetryHistoryPoint } from "@/types/hospital";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Custom tooltip
+// Custom tooltip & legend
 // ─────────────────────────────────────────────────────────────────────────────
+
+const renderLegend = (props: any) => {
+  const { payload } = props;
+  return (
+    <ul className="flex flex-wrap items-center gap-4 pb-2">
+      {payload.map((entry: any, index: number) => (
+        <li key={`item-${index}`} className="flex items-center gap-1.5 text-[10px] text-slate-400 font-semibold tracking-wider uppercase">
+          <div className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: entry.color }} />
+          {entry.value}
+        </li>
+      ))}
+    </ul>
+  );
+};
 
 interface TooltipPayloadItem {
   name:  string;
@@ -146,8 +160,10 @@ export default function TelemetryChart({ height = 280 }: TelemetryChartProps) {
           {/* X axis — timestamps */}
           <XAxis
             dataKey="timestamp"
-            tickFormatter={(v: number) =>
-              format(new Date(v * 1000), "HH:mm")
+            tickCount={6}
+            interval="preserveStartEnd"
+            tickFormatter={(v, idx) =>
+              idx % 10 === 0 ? format(new Date(v * 1000), "HH:mm") : ""
             }
             tick={{
               fill:       "#64748b",
@@ -190,14 +206,7 @@ export default function TelemetryChart({ height = 280 }: TelemetryChartProps) {
 
           <Tooltip content={<CustomTooltip />} />
 
-          <Legend
-            wrapperStyle={{
-              fontFamily:    "system-ui, sans-serif",
-              fontSize:      "12px",
-              paddingTop:    "12px",
-              color:         "#94a3b8",
-            }}
-          />
+          <Legend verticalAlign="top" content={renderLegend} />
 
           {/* ICU Occupancy — emerald */}
           <Area

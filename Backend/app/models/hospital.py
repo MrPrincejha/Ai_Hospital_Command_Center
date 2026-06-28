@@ -196,3 +196,38 @@ class ClinicalReport(Base):
             f"<ClinicalReport report_id={self.report_id} "
             f"score={self.total_urgency_score} tier={self.triage_tier}>"
         )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Patient Encounters
+# ─────────────────────────────────────────────────────────────────────────────
+
+class PatientEncounter(Base):
+    """
+    Source of truth for patient flow. Every real or simulated hospital visit
+    is logged here. This table acts as the foundation for the forecasting engine.
+    """
+
+    __tablename__ = "patient_encounters"
+
+    id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False),
+        primary_key=True,
+        default=lambda: str(uuid.uuid4()),
+    )
+    mrn: Mapped[str] = mapped_column(String(12))
+    arrival_time: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), 
+        default=datetime.utcnow, 
+        index=True
+    )
+    triage_level: Mapped[int] = mapped_column(Integer)
+    department: Mapped[str] = mapped_column(String(20))
+    status: Mapped[str] = mapped_column(String(20), default="Waiting")
+    
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    def __repr__(self) -> str:
+        return f"<PatientEncounter mrn={self.mrn} dept={self.department} status={self.status}>"

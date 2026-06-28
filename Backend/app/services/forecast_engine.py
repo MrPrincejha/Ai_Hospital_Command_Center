@@ -108,130 +108,63 @@ class TelemetryRecord:
 # Synthetic telemetry generator
 # ─────────────────────────────────────────────────────────────────────────────
 
-class MockTelemetryGenerator:
+class DatabaseTelemetryFetcher:
     """
-    Generates a realistic synthetic telemetry dataset for model training.
-
-    The generator embeds:
-    - Circadian patterns (morning/evening peaks)
-    - Weekly seasonality (Mon–Fri busier than weekends)
-    - Random noise with realistic bounds
-    - Occasional surge events (mimicking real ER surges)
+    Fetches actual patient flow telemetry from PostgreSQL for model training.
     """
-
-    ICU_CAPACITY = 10
-
-    def __init__(self, seed: int = 42) -> None:
-        self.rng = np.random.default_rng(seed)
-
-    def _hour_load_factor(self, hour: int) -> float:
-        """Returns a multiplier 0.3–1.0 based on hour of day."""
-        # Morning peak 8–12, evening peak 17–21, quiet 0–6
-        peaks = np.array([
-            0.3, 0.3, 0.3, 0.3, 0.35, 0.4,    # 00–05
-            0.5, 0.7, 0.9, 1.0, 0.95, 0.9,     # 06–11
-            0.85, 0.8, 0.75, 0.7, 0.75, 0.9,   # 12–17
-            1.0, 0.95, 0.85, 0.7, 0.55, 0.4,   # 18–23
-        ])
-        return peaks[hour % 24]
-
-    def _day_load_factor(self, day: int) -> float:
-        """Mon=0.9, Wed=1.0, Fri=0.95, Sat/Sun=0.65."""
-        factors = [0.9, 0.85, 1.0, 0.95, 0.95, 0.65, 0.60]
-        return factors[day % 7]
-
-    def generate(self, n_hours: int = 8760) -> pd.DataFrame:
+    
+    def fetch_hourly_features(self, lookback_hours: int = 168) -> pd.DataFrame:
         """
-        Generate `n_hours` of synthetic telemetry.
-
-        Parameters
-        ----------
-        n_hours : int
-            Number of hourly records to generate (default 8760 = 1 year).
-
-        Returns
-        -------
-        pd.DataFrame with one row per hour.
+        Aggregates PatientEncounter records by hour.
         """
-        logger.info("Generating %d hours of synthetic telemetry…", n_hours)
-        start = datetime(2024, 1, 1, 0, 0, 0)
-        records: list[dict[str, Any]] = []
-
-        for h in range(n_hours):
-            ts = start + timedelta(hours=h)
-            hour = ts.hour
-            dow = ts.weekday()
-            lf = self._hour_load_factor(hour) * self._day_load_factor(dow)
-
-            # Inject occasional surge (≈3 % of hours)
-            surge = self.rng.random() < 0.03
-
-            # ── ER ─────────────────────────────────────────────────────────
-            base_er_arr = 12.0 * lf * (2.5 if surge else 1.0)
-            er_arrivals = int(self.rng.poisson(base_er_arr))
-            er_queue = max(0, int(er_arrivals * 0.4 + self.rng.normal(0, 1)))
-            er_util = min(1.0, (er_arrivals / 16.0) + self.rng.normal(0, 0.05))
-            er_congestion = max(0.0, min(1.0, er_util ** 2 + self.rng.normal(0, 0.05)))
-
-            # ── ICU ────────────────────────────────────────────────────────
-            icu_occ = max(
-                0,
-                min(
-                    self.ICU_CAPACITY,
-                    int(self.ICU_CAPACITY * (0.6 + 0.3 * lf) + self.rng.normal(0, 1)),
-                ),
+        from sqlalchemy import text
+        from app.core.database import SessionLocal
+        
+        logger.info(f"Fetching {lookback_hours} hours of historical telemetry from database...")
+        
+        query = text("""
+            WITH hourly_stats AS (
+                SELECT 
+                    date_trunc('hour', arrival_time) AS hour,
+                    COUNT(*) AS patient_inflow,
+                    SUM(CASE WHEN department = 'ER' AND status = 'Waiting' THEN 1 ELSE 0 END) AS er_queue,
+                    SUM(CASE WHEN department = 'ICU' AND status IN ('Waiting', 'InTreatment') THEN 1 ELSE 0 END) AS icu_occupied,
+                    SUM(CASE WHEN department = 'Ward' AND status IN ('Waiting', 'InTreatment') THEN 1 ELSE 0 END) AS ward_occupied,
+                    AVG(triage_level) AS avg_acuity
+                FROM patient_encounters
+                WHERE arrival_time >= NOW() - INTERVAL '1 hour' * :lookback
+                GROUP BY 1
             )
-            icu_pct = icu_occ / self.ICU_CAPACITY
-
-            # ── OPD ────────────────────────────────────────────────────────
-            opd_q = max(0, int(30 * lf + self.rng.normal(0, 3)))
-            opd_util = min(1.0, lf + self.rng.normal(0, 0.08))
-
-            # ── Ward ───────────────────────────────────────────────────────
-            ward_q = max(0, int(10 * lf + self.rng.normal(0, 2)))
-            ward_util = min(1.0, lf * 0.8 + self.rng.normal(0, 0.07))
-
-            # ── Aggregates ─────────────────────────────────────────────────
-            total = icu_occ + er_queue + opd_q + ward_q
-            avg_wait = max(0.1, (er_queue * 0.5 + opd_q * 0.2) / max(total, 1))
-
-            records.append({
-                "timestamp": ts.isoformat(),
-                "hour_of_day": hour,
-                "day_of_week": dow,
-                "is_weekend": int(dow >= 5),
-                "opd_queue": opd_q,
-                "opd_utilization": round(opd_util, 4),
-                "er_queue": er_queue,
-                "er_utilization": round(er_util, 4),
-                "er_congestion_prob": round(er_congestion, 4),
-                "icu_occupied": icu_occ,
-                "icu_capacity": self.ICU_CAPACITY,
-                "icu_occupancy_pct": round(icu_pct, 4),
-                "ward_queue": ward_q,
-                "ward_utilization": round(ward_util, 4),
-                "total_patients_in_hospital": total,
-                "avg_wait_time_hours": round(avg_wait, 4),
-                # Targets will be filled in after dataframe is built
-                "icu_occupancy_pct_t12": 0.0,
-                "er_congestion_t12": 0.0,
-                "patient_inflow_t12": 0,
-            })
-
-        df = pd.DataFrame(records)
+            SELECT 
+                hour AS timestamp,
+                EXTRACT(hour FROM hour) AS hour_of_day,
+                EXTRACT(dow FROM hour) AS day_of_week,
+                CASE WHEN EXTRACT(dow FROM hour) IN (0, 6) THEN 1 ELSE 0 END AS is_weekend,
+                patient_inflow,
+                er_queue,
+                (icu_occupied::float / 10.0) AS icu_occupancy_pct,
+                (ward_occupied::float / 30.0) AS ward_occupancy_pct,
+                COALESCE(avg_acuity, 3.0) AS avg_acuity
+            FROM hourly_stats
+            ORDER BY timestamp ASC;
+        """)
+        
+        with SessionLocal() as db:
+            result = db.execute(query, {"lookback": lookback_hours})
+            rows = result.fetchall()
+            
+        if len(rows) < 48:
+            raise ValueError(f"Insufficient historical data for forecasting. Found {len(rows)} rows, minimum 48 required.")
+            
+        df = pd.DataFrame([dict(r._mapping) for r in rows])
         df["timestamp"] = pd.to_datetime(df["timestamp"])
-
-        # ── Fill target columns via shift ───────────────────────────────────
+        
         horizon = FORECAST_HORIZON_STEPS
         df["icu_occupancy_pct_t12"] = df["icu_occupancy_pct"].shift(-horizon).ffill()
-        df["er_congestion_t12"] = df["er_congestion_prob"].shift(-horizon).ffill()
-        df["patient_inflow_t12"] = (
-            df["total_patients_in_hospital"].shift(-horizon).ffill().astype(int)
-        )
+        df["er_congestion_t12"] = df["er_queue"].shift(-horizon).ffill() / 50.0  # Proxy
+        df["patient_inflow_t12"] = df["patient_inflow"].shift(-horizon).ffill().astype(int)
 
-        # Drop the last `horizon` rows (incomplete targets)
         df = df.iloc[:-horizon].reset_index(drop=True)
-        logger.info("Generated %d training records.", len(df))
         return df
 
 
@@ -352,21 +285,23 @@ class HospitalForecaster:
     # ── Training ──────────────────────────────────────────────────────────────
 
     def train(self, df: pd.DataFrame) -> dict[str, float]:
-        """
-        Train all three forecasting models.
-
-        Parameters
-        ----------
-        df : pd.DataFrame
-            Training dataset from MockTelemetryGenerator (with target columns).
-
-        Returns
-        -------
-        dict[str, float]
-            MAE scores per model.
-        """
+        import mlflow
+        import mlflow.xgboost
+        from datetime import datetime
+        from app.services.model_registry import notify_drift
+        
         logger.info("Starting model training on %d samples…", len(df))
-        feat_df, self.feature_cols = self.feature_engineer.fit_transform(df)
+        
+        self.feature_cols = [
+            "hour_of_day", "day_of_week", "is_weekend", 
+            "er_queue", "icu_occupancy_pct", "avg_acuity"
+        ]
+        
+        for col in self.feature_cols:
+            if col not in df.columns:
+                df[col] = 0.0
+                
+        feat_df = df.copy()
 
         X = feat_df[self.feature_cols].values
         y_icu = feat_df["icu_occupancy_pct_t12"].values
@@ -375,11 +310,6 @@ class HospitalForecaster:
 
         X_scaled = self.scaler.fit_transform(X)
 
-        X_tr, X_te, y_icu_tr, y_icu_te = train_test_split(
-            X_scaled, y_icu, test_size=0.2, shuffle=False
-        )
-        _, _, y_er_tr, y_er_te = train_test_split(
-            X_scaled, y_er, test_size=0.2, shuffle=False
         )
         _, _, y_in_tr, y_in_te = train_test_split(
             X_scaled, y_inflow, test_size=0.2, shuffle=False

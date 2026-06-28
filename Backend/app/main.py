@@ -1,4 +1,3 @@
-# backend/app/main.py
 """
 AI Hospital Command Center — FastAPI Application Entry Point
 ============================================================
@@ -13,25 +12,9 @@ Wires together all application components:
   - Health check endpoint
   - Global exception handlers
 
-Startup sequence
-----------------
-1. Initialise async Redis connection pool
-2. Start Redis pub/sub → WebSocket bridge (background task)
-3. Start WebSocket heartbeat supervisor (background task)
-4. Register all API routers
-5. Serve requests
-
-Shutdown sequence
------------------
-1. Stop pub/sub bridge
-2. Broadcast shutdown notice to all WebSocket clients
-3. Close Redis connection pool
-
 Run locally
 -----------
     uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
-
-Author : AI Hospital Command Center Team
 """
 
 from __future__ import annotations
@@ -48,7 +31,19 @@ from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+from prometheus_fastapi_instrumentator import Instrumentator
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from opentelemetry.sdk.resources import Resource
+
 from app.api.routes import clinical, copilot, forecast, simulation
+from app.services.rate_limit_monitor import limiter
 from app.api.routes import websocket_routes
 from app.core.config import settings
 from app.core.redis_client import (
@@ -63,6 +58,10 @@ from app.websocket.manager import (
     init_pubsub_bridge,
 )
 
+# ── Database elements ──────────────────────────────────────────────────────────
+from app.core.database import async_engine, Base
+# Import models explicitly so SQLAlchemy discovers them during creation
+from app.models.simulation import SimulationResultModel 
 
 # ── Logging setup ──────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -73,23 +72,18 @@ logger = logging.getLogger(__name__)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Background task references (kept so they can be cancelled on shutdown)
+# Background task references
 # ─────────────────────────────────────────────────────────────────────────────
-
 _background_tasks: list[asyncio.Task] = []
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# FastAPI lifespan
+# FastAPI Lifespan Sequence
 # ─────────────────────────────────────────────────────────────────────────────
-
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """
-    Application lifespan context manager.
-
-    Everything before `yield` runs at startup.
-    Everything after `yield` runs at shutdown.
+    Handles application startup and shutdown lifecycle hooks sequentially.
     """
     logger.info(
         "=== %s v%s starting up [%s] ===",
@@ -98,13 +92,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         settings.environment,
     )
 
-    # ── 1. Initialise Redis connection pool ────────────────────────────────────
+    # ── 1. Initialise Relational Tables & Redis Pool ──────────────────────────
     try:
+        # Create database tables automatically if they don't exist
+        async with async_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        logger.info("PostgreSQL tables checked and verified.")
+
+        # Initialize Redis
         await init_redis_pool()
-        
         logger.info("Redis pool ready.")
     except Exception as exc:
-        logger.critical("Redis initialisation failed — cannot start: %s", exc)
+        logger.critical("Database/Redis initialisation failed — cannot start: %s", exc)
         raise
 
     # ── 2. Start Redis → WebSocket pub/sub bridge ──────────────────────────────
@@ -127,14 +126,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     )
 
     logger.info("=== Application ready to serve requests ===")
-
-    # ── Application runs here ─────────────────────────────────────────────────
     yield
 
-    # ── Shutdown ───────────────────────────────────────────────────────────────
+    # ── Shutdown Hook ──────────────────────────────────────────────────────────
     logger.info("=== Application shutting down ===")
 
-    # Notify all connected clients
     try:
         await connection_manager.broadcast_all(
             WebSocketMessage(
@@ -145,7 +141,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception:
         pass
 
-    # Cancel background tasks
     for task in _background_tasks:
         task.cancel()
         try:
@@ -153,25 +148,22 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         except (asyncio.CancelledError, asyncio.TimeoutError):
             pass
 
-    # Close Redis pool
     await close_redis_pool()
     logger.info("=== Shutdown complete ===")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# FastAPI application
+# FastAPI Application Configuration
 # ─────────────────────────────────────────────────────────────────────────────
-
 app = FastAPI(
     title=settings.app_name,
     description=(
         "AI-Powered Hospital Operations Intelligence & Clinical Digital Twin Platform.\n\n"
         "## Key Capabilities\n"
-        "- **Discrete Event Simulation** — SimPy M/M/c queue modelling for OPD, ER, ICU, Ward\n"
-        "- **ML Forecasting** — XGBoost/RandomForest 12-hour ICU/ER occupancy prediction\n"
-        "- **AI Copilot** — LangChain + GPT-4o-mini operational reasoning with live telemetry\n"
-        "- **Clinical Screening** — Rule-based urgency scoring with LLM anomaly extraction\n"
-        "- **Live Telemetry** — Redis pub/sub → WebSocket streaming to dashboards\n"
+        "- **Discrete Event Simulation** — SimPy M/M/c queue modelling\n"
+        "- **ML Forecasting** — XGBoost/RandomForest predictions\n"
+        "- **AI Copilot** — Operational reasoning\n"
+        "- **Live Telemetry** — Streaming dashboards\n"
     ),
     version=settings.app_version,
     docs_url="/docs" if not settings.is_production else None,
@@ -182,10 +174,39 @@ app = FastAPI(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Middleware
+# Middleware Configuration
 # ─────────────────────────────────────────────────────────────────────────────
 
-# CORS — allow Next.js dev + production origins
+# SlowAPI Rate Limiting setup
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
+
+# 1. Prometheus Metrics Configuration
+Instrumentator().instrument(app).expose(app)
+
+# 2. OpenTelemetry Tracing Configuration
+resource = Resource.create({"service.name": "hospital-command-center"})
+provider = TracerProvider(resource=resource)
+# Exporter configured to point to Jaeger OTLP port (defaults to localhost:4317 if not set)
+processor = BatchSpanProcessor(OTLPSpanExporter(endpoint="http://localhost:4317", insecure=True))
+provider.add_span_processor(processor)
+trace.set_tracer_provider(provider)
+
+FastAPIInstrumentor.instrument_app(app)
+
+@app.exception_handler(RateLimitExceeded)
+async def custom_rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded):
+    return JSONResponse(
+        status_code=429,
+        content={
+            "error": "rate_limit_exceeded",
+            "retry_after_seconds": int(exc.detail.split(" in ")[-1].replace("ms", "")) // 1000 if " in " in exc.detail else 3600,
+            "message": "Copilot limit: 50 requests/hour"
+        }
+    )
+
+# 1. CORS Middleware Configuration
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
@@ -194,15 +215,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
+# 2. HTTP Logging Middleware (with WebSocket bypass active)
 @app.middleware("http")
 async def request_logging_middleware(
     request: Request, call_next: Any
 ) -> Any:
     """
-    Log every HTTP request with method, path, status code and duration.
-    Skips health checks to reduce log noise.
+    Log every HTTP request with status and duration. 
+    Bypasses WebSocket upgrades immediately to prevent handshake failure.
     """
+    if request.headers.get("upgrade", "").lower() == "websocket" or request.url.path.startswith("/ws"):
+        return await call_next(request)
+
     start = time.monotonic()
     response = await call_next(request)
     duration_ms = round((time.monotonic() - start) * 1000, 2)
@@ -222,9 +246,8 @@ async def request_logging_middleware(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Global exception handlers
+# Global Exception Handlers
 # ─────────────────────────────────────────────────────────────────────────────
-
 @app.exception_handler(HTTPException)
 async def http_exception_handler(
     request: Request, exc: HTTPException
@@ -268,29 +291,15 @@ async def unhandled_exception_handler(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Health check
+# Endpoints
 # ─────────────────────────────────────────────────────────────────────────────
-
 @app.get(
     "/health",
     response_model=HealthResponse,
     tags=["Observability"],
     summary="Application health check",
-    description="Returns health status of the application and its dependencies.",
 )
 async def health() -> HealthResponse:
-    """
-    Liveness and readiness probe.
-
-    Checks:
-    - Application is running
-    - Redis connection is alive
-
-    Used by:
-    - Docker HEALTHCHECK
-    - Kubernetes liveness probe
-    - Load balancer health checks
-    """
     redis_ok = False
     app_status = "ok"
 
@@ -311,24 +320,16 @@ async def health() -> HealthResponse:
     )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# WebSocket connection stats
-# ─────────────────────────────────────────────────────────────────────────────
-
 @app.get(
     "/ws/stats",
     tags=["Observability"],
     summary="WebSocket connection statistics",
 )
 async def ws_stats() -> dict[str, Any]:
-    """Return current WebSocket connection counts per channel."""
     return connection_manager.stats()
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# API Router registration
-# ─────────────────────────────────────────────────────────────────────────────
-
+# ── Router registration ──────────────────────────────────────────────────────
 API_PREFIX = "/api"
 
 app.include_router(simulation.router, prefix=API_PREFIX)
@@ -336,13 +337,9 @@ app.include_router(forecast.router, prefix=API_PREFIX)
 app.include_router(clinical.router, prefix=API_PREFIX)
 app.include_router(copilot.router, prefix=API_PREFIX)
 
-# WebSocket routes (no /api prefix — WS clients connect to /ws/...)
+# WebSocket routes
 app.include_router(websocket_routes.router)
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Root
-# ─────────────────────────────────────────────────────────────────────────────
 
 @app.get("/", tags=["Root"])
 async def root() -> dict[str, str]:

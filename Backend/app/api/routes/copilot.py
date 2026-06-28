@@ -17,8 +17,10 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, Request, HTTPException, status
 
+from app.auth.models import User
+from app.auth.rbac import require_role
 from app.core.config import Settings, get_settings
 from app.core.redis_client import get_redis_sync
 from app.schemas.hospital import (
@@ -27,6 +29,7 @@ from app.schemas.hospital import (
     CopilotClearRequest,
     CopilotClearResponse,
 )
+from app.services.rate_limit_monitor import limiter, get_user_usage
 from app.services.llm_copilot import (
     HospitalCopilotService,
     MockHospitalCopilot,
@@ -92,12 +95,16 @@ async def get_copilot_service(
         "- 'Give me an ICU capacity assessment.'"
     ),
 )
+@limiter.limit("50/hour")
 async def query_copilot(
     request: CopilotQueryRequest,
+    fastapi_request: Request,
     copilot: HospitalCopilotService | MockHospitalCopilot = Depends(
         get_copilot_service
     ),
+    user: User = Depends(require_role("admin", "clinician")),
 ) -> CopilotQueryResponse:
+    fastapi_request.state.user = user
     """
     Process a natural language operational query via the AI copilot.
 
@@ -248,3 +255,13 @@ async def get_copilot_status(
             "Set GROQ_API_KEY in .env file and ensure a simulation has been run."
         ),
     }
+
+
+@router.get(
+    "/usage",
+    summary="Get current AI Copilot usage",
+)
+async def get_usage(
+    user: User = Depends(require_role("admin", "clinician"))
+):
+    return get_user_usage(str(user.id))

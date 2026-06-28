@@ -1,4 +1,3 @@
-# backend/worker/tasks/simulation_tasks.py
 """
 AI Hospital Command Center — Simulation Celery Task Module
 ==========================================================
@@ -8,12 +7,6 @@ This module is the importable task target listed in celery_app.py:
 It re-exports the simulation task from celery_app so Celery's
 autodiscovery can find it under the canonical task name
 "hospital.simulation.run".
-
-Having a dedicated module per task domain keeps the include list clean
-and allows future expansion (e.g. per-department sub-simulations)
-without touching celery_app.py.
-
-Author : AI Hospital Command Center Team
 """
 
 from __future__ import annotations
@@ -24,6 +17,10 @@ from typing import Any
 
 from worker.celery_app import celery_app
 from app.core.config import settings
+
+# ── Import Relational Persistence Dependencies ───────────────────────────────
+from app.core.database import SyncSessionLocal
+from app.models.simulation import SimulationResultModel
 
 logger = logging.getLogger(__name__)
 
@@ -48,21 +45,7 @@ def run_simulation(
     Celery task: run a full hospital discrete event simulation.
 
     Delegates to the core engine in sim_engine.py and persists
-    the result to Redis for API consumption.
-
-    Parameters
-    ----------
-    sim_hours : float
-        Simulated duration in hours.
-    telemetry_interval : float
-        How often (sim-hours) to emit a telemetry snapshot.
-    seed : int | None
-        RNG seed. None = random.
-
-    Returns
-    -------
-    dict
-        Simulation summary statistics.
+    the result to both Redis (for real-time polling) and PostgreSQL (long-term data warehouse).
     """
     from app.services.simulation_engine import run_hospital_simulation_task
     from app.core.redis_client import sync_set_json
@@ -73,6 +56,7 @@ def run_simulation(
     )
 
     try:
+        # 1. Execute the SimPy Simulation Engine Engine
         summary = run_hospital_simulation_task(
             sim_hours=sim_hours,
             telemetry_interval=telemetry_interval,
@@ -83,7 +67,26 @@ def run_simulation(
         summary["task_id"]      = self.request.id
         summary["completed_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
-        # Persist result for API polling
+        # 2. Long-Term Persistence: Save to Docker PostgreSQL
+        db = SyncSessionLocal()
+        try:
+            db_record = SimulationResultModel(
+                task_id=self.request.id,
+                sim_hours=sim_hours,
+                seed=seed if seed is not None else 42,
+                department_summary=summary.get("department_summary", {})
+            )
+            db.add(db_record)
+            db.commit()
+            logger.info("[simulation] Successfully committed result to PostgreSQL | task_id=%s", self.request.id)
+        except Exception as db_err:
+            db.rollback()
+            logger.error("[simulation] Database insertion aborted | task_id=%s error=%s", self.request.id, db_err)
+            # We log the error but don't crash the task if Redis caching succeeded
+        finally:
+            db.close()
+
+        # 3. Fast Cache Persistence: Persist result for API polling
         sync_set_json(
             key=f"simulation:result:{self.request.id}",
             value=summary,

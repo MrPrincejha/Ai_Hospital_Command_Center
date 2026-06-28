@@ -32,6 +32,8 @@ import type {
   TelemetryEvent,
 } from "@/types/hospital";
 
+const ALERT_COOLDOWN_MS = 8_000;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // useWebSocketBridge
 // ─────────────────────────────────────────────────────────────────────────────
@@ -47,6 +49,7 @@ export function useWebSocketBridge(): void {
   const setWsState     = useHospitalStore((s) => s.setWsState);
   const setConnectionId = useHospitalStore((s) => s.setConnectionId);
   const pushAlert      = useHospitalStore((s) => s.pushAlert);
+  const lastAlertTimes = useRef<Map<string, number>>(new Map());
 
   useEffect(() => {
     // Connect
@@ -94,9 +97,22 @@ export function useWebSocketBridge(): void {
     }>(
       "alert",
       (payload) => {
-        pushAlert(payload.level ?? "warning", payload.message ?? "Hospital alert");
-        if (payload.level === "critical") {
-          toast.error(`🚨 ${payload.message}`, { duration: 8000 });
+        const isCritical = payload.level === "critical";
+        const now = Date.now();
+        const msg = payload.message || "Hospital alert";
+        
+        // Naive extraction of alert type from message prefix
+        const alertType = msg.split("—")[0].split(":")[0].trim();
+
+        if (isCritical) {
+          const lastTime = lastAlertTimes.current.get(alertType) || 0;
+          if (now - lastTime > ALERT_COOLDOWN_MS) {
+            pushAlert(payload.level, msg);
+            toast.error(`🚨 ${msg}`, { duration: 8000 });
+            lastAlertTimes.current.set(alertType, now);
+          }
+        } else {
+          pushAlert(payload.level ?? "warning", msg);
         }
       },
     );

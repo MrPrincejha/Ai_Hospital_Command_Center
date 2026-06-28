@@ -67,6 +67,10 @@ async function request<T>(
 
   let response: Response;
   try {
+    const token = typeof window !== "undefined" ? localStorage.getItem("hospital_token") : null;
+    if (token) {
+      defaultHeaders["Authorization"] = `Bearer ${token}`;
+    }
     response = await fetch(url, {
       ...options,
       headers: { ...defaultHeaders, ...options.headers },
@@ -96,6 +100,20 @@ async function request<T>(
 export const healthApi = {
   check: (): Promise<HealthResponse> =>
     request<HealthResponse>("/health"),
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Auth
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const authApi = {
+  /** Login to get a bearer token. */
+  login: (body: URLSearchParams): Promise<{ access_token: string; token_type: string; user: { id: string; username: string; role: string } }> =>
+    request<{ access_token: string; token_type: string; user: { id: string; username: string; role: string } }>("/api/auth/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: body.toString(),
+    }),
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

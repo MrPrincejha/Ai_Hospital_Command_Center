@@ -1,0 +1,66 @@
+:root {
+  /* Canvas */
+  --bg-canvas: #030B1A;
+  --bg-panel: #070F20;
+  --bg-card: #0C1628;
+  --bg-card-hover: #0F1D35;
+  --bg-card-elevated: #111F38;
+
+  /* Borders */
+  --border-subtle: rgba(255,255,255,0.06);
+  --border-default: rgba(255,255,255,0.10);
+  --border-strong: rgba(255,255,255,0.18);
+  --border-focus: #3B82F6;
+
+  /* Semantic status */
+  --status-critical-fill: #7F1D1D;
+  --status-critical-border: #DC2626;
+  --status-critical-text: #FCA5A5;
+  --status-critical-dot: #EF4444;
+  --status-warning-fill: #451A03;
+  --status-warning-border: #D97706;
+  --status-warning-text: #FCD34D;
+  --status-normal-fill: #052e16;
+  --status-normal-border: #16A34A;
+  --status-normal-text: #86EFAC;
+  --status-info-fill: #0c2a4a;
+  --status-info-border: #2563EB;
+  --status-info-text: #93C5FD;
+
+  /* AI / Copilot brand */
+  --ai-fill: #1e1b4b;
+  --ai-border: #6366F1;
+  --ai-text: #C7D2FE;
+  --ai-accent: #818CF8;
+
+  /* Typography scale */
+  --text-display: 42px;
+  --text-headline: 28px;
+  --text-title: 18px;
+  --text-body: 14px;
+  --text-label: 12px;
+  --text-micro: 11px;
+
+  /* Font weights */
+  --fw-display: 700;
+  --fw-title: 600;
+  --fw-body: 400;
+  --fw-label: 500;
+
+  /* Text colours */
+  --text-primary: rgba(255,255,255,0.95);
+  --text-secondary: rgba(255,255,255,0.55);
+  --text-muted: rgba(255,255,255,0.30);
+  --text-disabled: rgba(255,255,255,0.18);
+
+  /* Radius */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-pill: 999px;
+
+  /* Accent for interactive UI */
+  --accent: #3B82F6;
+  --accent-hover: #2563EB;
+  --accent-muted: rgba(59,130,246,0.12);
+}

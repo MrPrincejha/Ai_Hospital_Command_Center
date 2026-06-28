@@ -50,7 +50,10 @@ export default function RootLayout({
       className={`${jetbrainsMono.variable}`}
       suppressHydrationWarning
     >
-      <body className="bg-slate-950 text-slate-200 font-sans antialiased">
+      <head>
+        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@latest/dist/tabler-icons.min.css" />
+      </head>
+      <body className="font-sans antialiased">
         {/* Subtle grid overlay */}
         <div
           className="pointer-events-none fixed inset-0 z-[9999] opacity-[0.02]"

@@ -96,6 +96,8 @@ class Settings(BaseSettings):
     )
     mongo_db_name: str = Field(default="hospital_logs")
 
+   
+
     # ── Redis ──────────────────────────────────────────────────────────────────
     redis_url: str = Field(
         default="redis://localhost:6379/0",

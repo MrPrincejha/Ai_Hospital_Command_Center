@@ -79,6 +79,10 @@ export interface HospitalStore {
   wsState:           WsConnectionState;
   connectionId:      string | null;
 
+  // ── Auth ──────────────────────────────────────────────────────────────────
+  token:             string | null;
+  user:              { id: string; username: string; role: string } | null;
+
   // ── Actions ───────────────────────────────────────────────────────────────
   setTelemetry:      (event: TelemetryEvent) => void;
   setForecast:       (forecast: ForecastResult) => void;
@@ -92,6 +96,8 @@ export interface HospitalStore {
   setActivePanel:    (panel: HospitalStore["activePanel"]) => void;
   setWsState:        (state: WsConnectionState) => void;
   setConnectionId:   (id: string | null) => void;
+  login:             (token: string, user: { id: string; username: string; role: string }) => void;
+  logout:            () => void;
   resetSession:      () => void;
 }
 
@@ -242,6 +248,26 @@ export const useHospitalStore = create<HospitalStore>((set, get) => ({
   setWsState: (wsState: WsConnectionState) => set({ wsState }),
 
   setConnectionId: (connectionId: string | null) => set({ connectionId }),
+
+  // ── Auth ──────────────────────────────────────────────────────────────────
+  token:          typeof window !== "undefined" ? localStorage.getItem("hospital_token") : null,
+  user:           typeof window !== "undefined" ? JSON.parse(localStorage.getItem("hospital_user") || "null") : null,
+
+  login: (token, user) => {
+    if (typeof window !== "undefined") {
+      localStorage.setItem("hospital_token", token);
+      localStorage.setItem("hospital_user", JSON.stringify(user));
+    }
+    set({ token, user });
+  },
+
+  logout: () => {
+    if (typeof window !== "undefined") {
+      localStorage.removeItem("hospital_token");
+      localStorage.removeItem("hospital_user");
+    }
+    set({ token: null, user: null });
+  },
 
   // ── Session reset ─────────────────────────────────────────────────────────
 
